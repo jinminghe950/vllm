@@ -6,8 +6,12 @@ set -x
 BASE_SHA=ed0f475          # commit immediately before the loader change
 FILE=vllm/model_executor/models/ernie45_vl_moe.py
 export HF_HOME=/workspace/hf
-export VLLM_USE_PRECOMPILED=1
 export VLLM_LOGGING_LEVEL=INFO
+# Build from source against the host's CUDA 12.8: the published precompiled
+# wheels link libcudart.so.13, which a 12.8 driver cannot load.
+export CUDA_HOME=/usr/local/cuda
+export TORCH_CUDA_ARCH_LIST="9.0"   # H100/H200 are sm90; one arch keeps the build short
+export CCACHE_DIR=/workspace/ccache
 
 mark() { echo "@@@@ $* @@@@"; }
 
@@ -16,7 +20,10 @@ nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv || true
 nvidia-smi | head -5 || true
 df -h /workspace || true
 
-apt-get update -y && apt-get install -y git curl build-essential
+apt-get update -y && apt-get install -y git curl build-essential ccache
+export MAX_JOBS=$(nproc)
+echo "MAX_JOBS=$MAX_JOBS  CUDA_HOME=$CUDA_HOME"
+nvcc --version || true
 curl -LsSf https://astral.sh/uv/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
 
@@ -28,7 +35,10 @@ git log --oneline -3
 mark STAGE_INSTALL_START
 uv venv --python 3.12
 source .venv/bin/activate
-uv pip install -e . --torch-backend=auto 2>&1 | tail -30
+uv pip install -r requirements/build/cuda.txt --torch-backend=auto 2>&1 | tail -15
+python -c "import torch; print('TORCH', torch.__version__, 'CUDA', torch.version.cuda)"
+mark STAGE_COMPILE_START
+uv pip install -e . --no-build-isolation --torch-backend=auto 2>&1 | tail -40
 uv pip install pillow 2>&1 | tail -3
 mark STAGE_INSTALL_DONE
 

@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 # Driver for the RunPod A/B test of the ernie45_vl_moe AutoWeightsLoader change.
+#
+# The published vLLM wheels link libcudart.so.13, but RunPod's H200 hosts hand
+# out a CUDA 12.8 driver. H200 is a datacenter GPU, so NVIDIA's forward
+# compatibility package lets the CUDA 13 binaries run on the older driver.
 # Keeps the pod alive at the end so logs stay readable.
 set -x
 
@@ -7,27 +11,29 @@ BASE_SHA=ed0f475          # commit immediately before the loader change
 FILE=vllm/model_executor/models/ernie45_vl_moe.py
 export HF_HOME=/workspace/hf
 export VLLM_LOGGING_LEVEL=INFO
-# Build from source against the host's CUDA 12.8: the published precompiled
-# wheels link libcudart.so.13, which a 12.8 driver cannot load.
-export CUDA_HOME=/usr/local/cuda
-export TORCH_CUDA_ARCH_LIST="9.0"   # H100/H200 are sm90; one arch keeps the build short
-export CCACHE_DIR=/workspace/ccache
+export VLLM_USE_PRECOMPILED=1
 
 mark() { echo "@@@@ $* @@@@"; }
 
 mark STAGE_SETUP_START
 nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv || true
-nvidia-smi | head -5 || true
 df -h /workspace || true
 
-apt-get update -y && apt-get install -y git curl build-essential ccache
-export MAX_JOBS=$(nproc)
-echo "MAX_JOBS=$MAX_JOBS  CUDA_HOME=$CUDA_HOME"
-nvcc --version || true
+apt-get update -y && apt-get install -y git curl wget
+
+mark STAGE_CUDA_COMPAT
+wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+dpkg -i cuda-keyring_1.1-1_all.deb
+apt-get update -y
+apt-get install -y cuda-compat-13-0
+ls -d /usr/local/cuda-13.0/compat || true
+export LD_LIBRARY_PATH=/usr/local/cuda-13.0/compat:$LD_LIBRARY_PATH
+
 curl -LsSf https://astral.sh/uv/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
 
 cd /workspace
+rm -rf /workspace/repo
 git clone --depth 50 -b claude/runpod-ab-test https://github.com/jinminghe950/vllm.git repo
 cd /workspace/repo
 git log --oneline -3
@@ -35,10 +41,7 @@ git log --oneline -3
 mark STAGE_INSTALL_START
 uv venv --python 3.12
 source .venv/bin/activate
-uv pip install -r requirements/build/cuda.txt --torch-backend=auto 2>&1 | tail -15
-python -c "import torch; print('TORCH', torch.__version__, 'CUDA', torch.version.cuda)"
-mark STAGE_COMPILE_START
-uv pip install -e . --no-build-isolation --torch-backend=auto 2>&1 | tail -40
+uv pip install -e . --torch-backend=cu130 2>&1 | tail -20
 uv pip install pillow 2>&1 | tail -3
 mark STAGE_INSTALL_DONE
 

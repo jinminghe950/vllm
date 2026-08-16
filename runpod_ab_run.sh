@@ -12,7 +12,8 @@ export VLLM_LOGGING_LEVEL=INFO
 mark() { echo "@@@@ $* @@@@"; }
 
 mark STAGE_SETUP_START
-nvidia-smi || true
+nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv || true
+nvidia-smi | head -5 || true
 df -h /workspace || true
 
 apt-get update -y && apt-get install -y git curl build-essential
@@ -29,8 +30,15 @@ uv venv --python 3.12
 source .venv/bin/activate
 uv pip install -e . --torch-backend=auto 2>&1 | tail -30
 uv pip install pillow 2>&1 | tail -3
-python -c "import vllm, torch; print('VLLM', vllm.__version__, 'TORCH', torch.__version__, torch.cuda.get_device_name(0))"
 mark STAGE_INSTALL_DONE
+
+# Preflight: abort before the ~56GB model download if the runtime is broken.
+if python -c "import vllm, torch; print('VLLM', vllm.__version__, 'TORCH', torch.__version__, 'TORCH_CUDA', torch.version.cuda, torch.cuda.get_device_name(0))"; then
+  mark PREFLIGHT_OK
+else
+  mark VERDICT_INSTALL_FAILED
+  sleep infinity
+fi
 
 mark STAGE_NEW_START
 python runpod_ab_test.py /workspace/new.json 2>&1 | tail -60

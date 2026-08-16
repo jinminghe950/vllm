@@ -22,12 +22,23 @@ df -h /workspace || true
 apt-get update -y && apt-get install -y git curl wget
 
 mark STAGE_CUDA_COMPAT
+# The base image already registers an NVIDIA CUDA apt source without Signed-By,
+# which collides with cuda-keyring and makes every apt-get update fail. Drop the
+# pre-existing lists before installing the keyring.
+rm -f /etc/apt/sources.list.d/cuda*.list /etc/apt/sources.list.d/nvidia*.list
 wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
 dpkg -i cuda-keyring_1.1-1_all.deb
 apt-get update -y
 apt-get install -y cuda-compat-13-0
-ls -d /usr/local/cuda-13.0/compat || true
+ls -l /usr/local/cuda-13.0/compat || true
+
+if [ ! -d /usr/local/cuda-13.0/compat ]; then
+  mark VERDICT_CUDA_COMPAT_FAILED
+  sleep infinity
+fi
 export LD_LIBRARY_PATH=/usr/local/cuda-13.0/compat:$LD_LIBRARY_PATH
+# Prove the compat driver is actually in front of the 12.8 one.
+nvidia-smi || true
 
 curl -LsSf https://astral.sh/uv/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
